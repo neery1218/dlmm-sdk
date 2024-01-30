@@ -1,4 +1,5 @@
 use std::rc::Rc;
+use std::str::FromStr;
 
 use anchor_client::Client;
 use anchor_client::{
@@ -8,6 +9,7 @@ use anchor_client::{
         signer::{keypair::*, Signer},
     },
 };
+use anchor_lang::prelude::Pubkey;
 use anyhow::*;
 use clap::*;
 
@@ -202,6 +204,15 @@ async fn main() -> Result<()> {
             amount_in,
             swap_for_y,
         } => {
+            // let (lb_pair, _) = derive_lb_pair_pda(
+            //     Pubkey::from_str("So11111111111111111111111111111111111111112").unwrap(), 
+            //     Pubkey::from_str("SLNDpmoWTVADgEdndyvWzroNL7zSi1dF9PC3xHGtPwp").unwrap(), 
+            //     100, 
+            //     true 
+            // );
+            // println!("hello");
+            // println!("{:?}", lb_pair);
+
             let params = SwapParameters {
                 amount_in,
                 lb_pair,

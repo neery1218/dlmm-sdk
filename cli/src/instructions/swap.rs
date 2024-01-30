@@ -1,9 +1,11 @@
 use std::ops::Deref;
 
+use anchor_client::solana_client::nonblocking::rpc_client::RpcClient;
 use anchor_client::solana_client::rpc_config::RpcSendTransactionConfig;
 
 use anchor_client::solana_sdk::compute_budget::ComputeBudgetInstruction;
 use anchor_client::{solana_sdk::pubkey::Pubkey, solana_sdk::signer::Signer, Program};
+use anchor_lang::{Space, AccountDeserialize};
 use anchor_lang::solana_program::instruction::AccountMeta;
 use anchor_spl::associated_token::get_associated_token_address;
 
@@ -33,7 +35,16 @@ pub async fn swap<C: Deref<Target = impl Signer> + Clone>(
         swap_for_y,
     } = params;
 
+    let rpc_client = program.async_rpc();
+    let data = rpc_client.get_account_data(&lb_pair).await?;
+    println!("data: {:#?}", data.len());
+    println!("size: {:?}", LbPair::INIT_SPACE);
+    println!("hi");
+    println!("trying");
+    let a = LbPair::try_deserialize(&mut &data[..])?;
+    println!("a: {:#?}", a);
     let lb_pair_state: LbPair = program.account(lb_pair).await?;
+    println!("lb_pair_state: {:#?}", lb_pair_state);
 
     let active_bin_array_idx = BinArray::bin_id_to_bin_array_index(lb_pair_state.active_id)?;
     let (bin_array_0, _bump) = derive_bin_array_pda(lb_pair, active_bin_array_idx as i64);
