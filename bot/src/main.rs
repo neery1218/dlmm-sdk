@@ -1,8 +1,8 @@
-use solana_client::nonblocking::tpu_client::{TpuClient};
 use anchor_client::solana_client::nonblocking::rpc_client::RpcClient;
 use anchor_client::solana_client::rpc_config::RpcSendTransactionConfig;
 use anchor_client::solana_sdk::transaction::Transaction;
 use anchor_client::Client;
+use solana_client::nonblocking::tpu_client::TpuClient;
 use solana_client::tpu_client::TpuClientConfig;
 use spl_memo::build_memo;
 use std::ops::Deref;
@@ -145,17 +145,22 @@ pub async fn swap<C: Deref<Target = impl Signer> + Clone>(
 
 #[tokio::main]
 async fn main() {
+    // params
+    let amount_in = 1_000;
+    let target_price = 0.4;
+    let swap_for_y = true; // true if dumping X, false if buying X
+
     // JUP-USDC. x is JUP, y is USDC
-    // let pool = Pubkey::from_str("GhZtugCqUskpDPiuB5zJPxabxpZZKuPZmAQtfSDB3jpZ").unwrap();
-    // let decimals_x = 6;
-    // let decimals_y = 6;
+    let pool = Pubkey::from_str("GhZtugCqUskpDPiuB5zJPxabxpZZKuPZmAQtfSDB3jpZ").unwrap();
+    let decimals_x = 6;
+    let decimals_y = 6;
 
     // SOL-USDC. x is SOL, y is USDC
     // let pool = Pubkey::from_str("FoSDw2L5DmTuQTFe55gWPDXf88euaxAEKFre74CnvQbX").unwrap();
     // let decimals_x = 9;
     // let decimals_y = 6;
 
-    // blze-usdc
+    // pyth-usdc
     let pool = Pubkey::from_str("7ER8z7q6RLE3EXL3m9SaH68Lei6ba8yv9APC1iq8duJG").unwrap();
     let decimals_x = 6;
     let decimals_y = 6;
@@ -167,11 +172,6 @@ async fn main() {
     let program = client.program(lb_clmm::ID).unwrap();
 
     let lb_pair_state: LbPair = program.account(pool).await.unwrap();
-
-    let amount_in = 1_000;
-
-    let target_price = 0.50;
-    let swap_for_y = false; // true if dumping X, false if buying X
 
     // FIXME: need to find an actual price here
     let expected_out_amount = if swap_for_y {
@@ -192,13 +192,12 @@ async fn main() {
     let price_per_lamport =
         price_per_token_to_per_lamport(target_price, decimals_x, decimals_y).unwrap();
 
-    // println!("lb pair state: {:#?}", lb_pair_state);
+    println!("lb pair state: {:#?}", lb_pair_state);
     println!("bin step: {:?}", lb_pair_state.bin_step);
     let bin_id =
         get_id_from_price(lb_pair_state.bin_step, &price_per_lamport, Rounding::Down).unwrap();
     println!("bin_id: {:?}", bin_id);
 
-    // TODO: bin array idx can be this or less.
     let mut bin_array_idx = BinArray::bin_id_to_bin_array_index(bin_id).unwrap();
     println!("bin_array_idx: {:?}", bin_array_idx);
     println!("active bin id: {:?}", lb_pair_state.active_id);
@@ -214,66 +213,31 @@ async fn main() {
         bin_array_idx = active_bin_array_idx;
     }
 
-    let swap_ixes = swap(
-        SwapParameters {
-            lb_pair: pool,
-            amount_in,
-            swap_for_y,
-            bin_array_idx,
-            min_amount_out: expected_out_amount as u64,
-        },
-        &program,
-        &lb_pair_state,
-    )
-    .await
-    .unwrap();
+    let offsets = if swap_for_y { [0, 1, 2] } else { [0, -1, -2] };
 
+    let mut nested_swap_ixes = vec![];
+    for offset in offsets {
+        let swap_ixes = swap(
+            SwapParameters {
+                lb_pair: pool,
+                amount_in,
+                swap_for_y,
+                bin_array_idx: bin_array_idx + offset,
+                min_amount_out: expected_out_amount as u64,
+            },
+            &program,
+            &lb_pair_state,
+        )
+        .await
+        .unwrap();
+        nested_swap_ixes.push(swap_ixes);
+    }
+
+    println!("spamming...");
     let h = tokio::spawn(async move {
-        executor(swap_ixes).await;
+        executor(nested_swap_ixes).await;
     });
     h.await.unwrap();
-    // for i in 0..1000 {
-    //     let mut ixes = vec![ComputeBudgetInstruction::set_compute_unit_price(1)]; 
-    //     ixes.extend(swap_ixes.clone());
-    //     ixes.push(build_memo(format!("{}", i).as_bytes(), &[]));
-
-    //     let tx = Transaction::new_signed_with_payer(
-    //         &ixes,
-    //         Some(&payer.pubkey()),
-    //         &[&payer],
-    //         rpc_client.get_latest_blockhash().await.unwrap(),
-    //     );
-    //     // let sig = rpc_client.send_and_confirm_transaction(&tx).await.unwrap();
-    //     let sig = rpc_client
-    //         .send_transaction_with_config(
-    //             &tx,
-    //             RpcSendTransactionConfig {
-    //                 skip_preflight: true,
-    //                 ..RpcSendTransactionConfig::default()
-    //             },
-    //         )
-    //         .await;
-    //     println!("sig: {:?}", sig);
-    // }
-
-    // println!("bin_array_idx: {:?}", bin_array_idx);
-    // let bin_array: BinArray = program
-    //     .account(derive_bin_array_pda(pool, bin_array_idx as i64).0)
-    //     .await
-    //     .unwrap();
-
-    // println!("bin array index: {:?}", bin_array.index);
-    // let bin = bin_array.bins[0];
-    // let price = q64x64_price_to_decimal(bin.price).unwrap();
-    // let price =
-    //     price_per_lamport_to_price_per_token(price.try_into().unwrap(), decimals_x, decimals_y);
-    // println!("active bin array 0 price: {:?}", price);
-
-    // let bin = bin_array.bins[MAX_BIN_PER_ARRAY - 1];
-    // let price = q64x64_price_to_decimal(bin.price).unwrap();
-    // let price =
-    //     price_per_lamport_to_price_per_token(price.try_into().unwrap(), decimals_x, decimals_y);
-    // println!("active bin array n-1 price: {:?}", price);
 }
 
 /// Calculate the bin id based on price. If the bin id is in between 2 bins, it will round up.
@@ -327,7 +291,7 @@ pub fn price_per_lamport_to_price_per_token(
     )
 }
 
-pub async fn executor(swap_ixes: Vec<Instruction>) {
+pub async fn executor(swap_ixes: Vec<Vec<Instruction>>) {
     let rpc_url = "https://solend.rpcpool.com/a3e03ba77d5e870c8c694b19d61c";
     let ws_url = "ws://solend.rpcpool.com/a3e03ba77d5e870c8c694b19d61c:8900";
 
@@ -343,7 +307,6 @@ pub async fn executor(swap_ixes: Vec<Instruction>) {
     )
     .await
     .unwrap();
-
 
     let writer_data = Arc::clone(&shared_data);
     let h1 = tokio::spawn(async move {
@@ -364,7 +327,7 @@ pub async fn executor(swap_ixes: Vec<Instruction>) {
         "https://rpc-proxy-miami.sayori.link/42Mv0wgetfWgq6YRXbGbkUeRp49qDuFS",
         "https://solend.rpcpool.com/a3e03ba77d5e870c8c694b19d61c",
         "http://mainnet.rpc.jito.wtf/",
-        "http://frankfurt.mainnet.rpc.jito.wtf/"
+        "http://frankfurt.mainnet.rpc.jito.wtf/",
     ];
 
     let mut handles = vec![];
@@ -380,43 +343,46 @@ pub async fn executor(swap_ixes: Vec<Instruction>) {
                 .expect("Example requires a keypair file");
 
             // let now = Instant::now();
-            for i in 1..250 {
+            let mut i = 0;
+            loop {
                 if let Ok(data) = shared_data.try_read() {
                     if last_blockhash != Some(*data) {
-                        println!("blockhash: {:?}", data);
+                        // println!("blockhash: {:?}", data);
                         last_blockhash = Some(*data);
                     }
                 }
 
-                if let Some(blockhash) = last_blockhash {
-                    let mut ixes = vec![ComputeBudgetInstruction::set_compute_unit_price(1)];
-                    ixes.extend(swap_ixes.clone());
-                    ixes.push(build_memo(format!("{}", i).as_bytes(), &[]));
+                for swap_ixes in &swap_ixes {
+                    if let Some(blockhash) = last_blockhash {
+                        let mut ixes = vec![ComputeBudgetInstruction::set_compute_unit_price(1)];
+                        ixes.extend(swap_ixes.clone());
+                        ixes.push(build_memo(format!("{}", i).as_bytes(), &[]));
 
-                    let tx = Transaction::new_signed_with_payer(
-                        &ixes,
-                        Some(&payer.pubkey()),
-                        &[&payer],
-                        blockhash
-                    );
-                    // let sig = rpc_client.send_and_confirm_transaction(&tx).await.unwrap();
-                    let sig = rpc_client
-                        .send_transaction_with_config(
-                            &tx,
-                            RpcSendTransactionConfig {
-                                skip_preflight: true,
-                                ..RpcSendTransactionConfig::default()
-                            },
-                        )
-                        .await;
-                    // println!("sig: {:?}", sig);
+                        let tx = Transaction::new_signed_with_payer(
+                            &ixes,
+                            Some(&payer.pubkey()),
+                            &[&payer],
+                            blockhash,
+                        );
+                        // let sig = rpc_client.send_and_confirm_transaction(&tx).await.unwrap();
+                        let sig = rpc_client
+                            .send_transaction_with_config(
+                                &tx,
+                                RpcSendTransactionConfig {
+                                    skip_preflight: true,
+                                    ..RpcSendTransactionConfig::default()
+                                },
+                            )
+                            .await;
+                        // println!("sig: {:?}", sig);
+                    }
                 }
+
+                i += 1;
                 if i % 100 == 0 {
-                    println!("{} transactions sent", i);
+                    println!("{} transactions sent to {}", i, rpc_url);
                 }
             }
-
-            println!("done");
         });
         handles.push(h);
     }
