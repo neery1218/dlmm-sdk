@@ -1,3 +1,6 @@
+mod penis;
+use penis::send_txn_as_bundle;
+
 use anchor_client::solana_client::nonblocking::rpc_client::RpcClient;
 use anchor_client::solana_client::rpc_config::RpcSendTransactionConfig;
 use anchor_client::solana_sdk::commitment_config::CommitmentConfig;
@@ -147,9 +150,9 @@ pub async fn swap<C: Deref<Target = impl Signer> + Clone>(
 #[tokio::main]
 async fn main() {
     // JUP-USDC. x is JUP, y is USDC
-    let pool = Pubkey::from_str("GhZtugCqUskpDPiuB5zJPxabxpZZKuPZmAQtfSDB3jpZ").unwrap();
-    let decimals_x = 6;
-    let decimals_y = 6;
+    // let pool = Pubkey::from_str("GhZtugCqUskpDPiuB5zJPxabxpZZKuPZmAQtfSDB3jpZ").unwrap();
+    // let decimals_x = 6;
+    // let decimals_y = 6;
 
     // SOL-USDC. x is SOL, y is USDC
     // let pool = Pubkey::from_str("FoSDw2L5DmTuQTFe55gWPDXf88euaxAEKFre74CnvQbX").unwrap();
@@ -157,16 +160,17 @@ async fn main() {
     // let decimals_y = 6;
 
     // pyth-usdc
-    // let pool = Pubkey::from_str("7ER8z7q6RLE3EXL3m9SaH68Lei6ba8yv9APC1iq8duJG").unwrap();
-    // let decimals_x = 6;
-    // let decimals_y = 6;
+    let pool = Pubkey::from_str("7ER8z7q6RLE3EXL3m9SaH68Lei6ba8yv9APC1iq8duJG").unwrap();
+    let decimals_x = 6;
+    let decimals_y = 6;
 
     // params
     let amount_in = 1_000;
     let target_price = 0.4;
     let swap_for_y = false; // true if dumping X, false if buying X
-    let start_slot = 245287622 - 100; // 100 slots
-                                      // let start_slot = 245223000;
+    let start_slot = 0;
+    // let start_slot = 245287622 - 100; // 100 slots
+    // let start_slot = 245223000;
 
     let payer = read_keypair_file("/home/ubuntu/.config/solana/id.json")
         .expect("Wallet keypair file not found");
@@ -256,10 +260,20 @@ async fn main() {
     }
 
     println!("spamming...");
-    let h = tokio::spawn(async move {
-        executor(nested_swap_ixes).await;
-    });
-    h.await.unwrap();
+    let blockhash = rpc_client.get_recent_blockhash().await.unwrap().0;
+    send_txn_as_bundle(
+        rpc_client,
+        "https://ny.mainnet.block-engine.jito.wtf",
+        Arc::new(payer),
+        Pubkey::from_str("96gYZGLnJYVFmbjzopPSU6QiEV5fGqZNyN9nmNhvrZU5").unwrap(),
+        10,
+        &nested_swap_ixes[0],
+        blockhash,
+    ).await.unwrap();
+    // let h = tokio::spawn(async move {
+    //     executor(nested_swap_ixes).await;
+    // });
+    // h.await.unwrap();
 }
 
 /// Calculate the bin id based on price. If the bin id is in between 2 bins, it will round up.
