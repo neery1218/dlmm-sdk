@@ -1,10 +1,17 @@
+use std::result::Result::Ok;
 use anchor_client::solana_client::nonblocking::rpc_client::RpcClient;
 use anchor_client::solana_client::rpc_config::RpcSendTransactionConfig;
 use anchor_client::solana_sdk::transaction::Transaction;
 use anchor_client::Client;
 use anchor_lang::solana_program::message::Message;
+use solana_client::nonblocking::tpu_client::TpuClient;
+use solana_client::tpu_client::TpuClientConfig;
+use spl_memo::build_memo;
 use std::ops::Deref;
 use std::str::FromStr;
+use std::sync::Arc;
+use std::sync::RwLock;
+use std::time::Instant;
 
 use anchor_client::solana_sdk::signer::keypair::read_keypair_file;
 use lb_clmm::constants::BASIS_POINT_MAX;
@@ -38,7 +45,7 @@ pub struct SwapParameters {
     pub amount_in: u64,
     pub swap_for_y: bool,
     pub bin_array_idx: i32,
-    pub min_amount_out: u64
+    pub min_amount_out: u64,
 }
 
 pub async fn swap<C: Deref<Target = impl Signer> + Clone>(
@@ -51,7 +58,7 @@ pub async fn swap<C: Deref<Target = impl Signer> + Clone>(
         lb_pair,
         swap_for_y,
         bin_array_idx,
-        min_amount_out
+        min_amount_out,
     } = params;
 
     let (bin_array_0, _bump) = derive_bin_array_pda(lb_pair, bin_array_idx as i64);
@@ -105,7 +112,7 @@ pub async fn swap<C: Deref<Target = impl Signer> + Clone>(
 
     let ix = instruction::Swap {
         amount_in,
-        min_amount_out
+        min_amount_out,
     };
 
     let remaining_accounts = vec![
@@ -154,6 +161,7 @@ async fn main() {
     let client = Client::new(anchor_client::Cluster::Mainnet, &payer);
 
     let rpc_url = "https://solend.rpcpool.com/a3e03ba77d5e870c8c694b19d61c";
+    let rpc_url = "https://rpc-proxy-lax.sayori.link/42Mv0wgetfWgq6YRXbGbkUeRp49qDuFS";
     let rpc_client = RpcClient::new(String::from(rpc_url));
 
     let program = client.program(lb_clmm::ID).unwrap();
@@ -164,17 +172,26 @@ async fn main() {
     let swap_for_y = true;
 
     // FIXME: need to find an actual price here
-    let target_price = 100.0;
+    let target_price = 101.0;
     let expected_out_amount = if swap_for_y {
-        1
+        // sol is x and usdc is y and we are swapping for y, we want to sell sol at a price of 100 usdc
+        // or higher
+        // total dollars expected = 100 * amount_in / 10.pow(decimals_x)
+        // total usdc expected = total dollars expected * 10.pow(decimals_y)
+        target_price * amount_in as f64 / 10_f64.powi(decimals_x as i32 - decimals_y as i32)
     } else {
-        0
+        // sol is x and usdc is y and we are swapping for y, we want to buy sol at a price of 100
+        // or lower
+        // dollar value of input = amount_in / 10.pow(decimals_y);
+        // expected total sol per $1 = (dollar value of input / target_price) * 10.pow(decimals_x)
+        amount_in as f64 / target_price * 10_f64.powi(decimals_x as i32 - decimals_y as i32)
     };
+    println!("expected_out_amount: {:?}", expected_out_amount);
 
     let price_per_lamport =
         price_per_token_to_per_lamport(target_price, decimals_x, decimals_y).unwrap();
 
-    println!("lb pair state: {:#?}", lb_pair_state);
+    // println!("lb pair state: {:#?}", lb_pair_state);
     println!("price_per_lamport: {:?}", price_per_lamport);
     let bin_id =
         get_id_from_price(lb_pair_state.bin_step, &price_per_lamport, Rounding::Down).unwrap();
@@ -182,6 +199,9 @@ async fn main() {
 
     // TODO: bin array idx can be this or less.
     let bin_array_idx = BinArray::bin_id_to_bin_array_index(bin_id).unwrap();
+    println!("bin_array_idx: {:?}", bin_array_idx);
+    println!("active bin id: {:?}", lb_pair_state.active_id);
+    println!("active bin array id: {:?}", BinArray::bin_id_to_bin_array_index(lb_pair_state.active_id));
 
     let swap_ixes = swap(
         SwapParameters {
@@ -189,7 +209,8 @@ async fn main() {
             amount_in,
             swap_for_y,
             bin_array_idx,
-            min_amount_out: expected_out_amount
+            // min_amount_out: expected_out_amount as u64,
+            min_amount_out: 0,
         },
         &program,
         &lb_pair_state,
@@ -197,14 +218,28 @@ async fn main() {
     .await
     .unwrap();
 
-    let tx = Transaction::new_signed_with_payer(
-        &swap_ixes,
-        Some(&payer.pubkey()),
-        &[&payer],
-        rpc_client.get_latest_blockhash().await.unwrap(),
-    );
-    let sig = rpc_client.send_and_confirm_transaction(&tx).await.unwrap();
-    println!("sig: {:?}", sig);
+    for i in 0..10 {
+        let mut ixes = swap_ixes.clone();
+        ixes.push(build_memo(format!("{}", i).as_bytes(), &[]));
+
+        let tx = Transaction::new_signed_with_payer(
+            &swap_ixes,
+            Some(&payer.pubkey()),
+            &[&payer],
+            rpc_client.get_latest_blockhash().await.unwrap(),
+        );
+        // let sig = rpc_client.send_and_confirm_transaction(&tx).await.unwrap();
+        let sig = rpc_client
+            .send_transaction_with_config(
+                &tx,
+                RpcSendTransactionConfig {
+                    skip_preflight: true,
+                    ..RpcSendTransactionConfig::default()
+                },
+            )
+            .await;
+        println!("sig: {:?}", sig);
+    }
 
     // println!("bin_array_idx: {:?}", bin_array_idx);
     // let bin_array: BinArray = program
@@ -275,4 +310,71 @@ pub fn price_per_lamport_to_price_per_token(
             .checked_mul(price_per_lamport)?
             .checked_div(one_ui_quote_token_amount)?,
     )
+}
+
+async fn executor() {
+    let rpc_url = "https://solend.rpcpool.com/a3e03ba77d5e870c8c694b19d61c";
+    let ws_url = "ws://solend.rpcpool.com/a3e03ba77d5e870c8c694b19d61c:8900";
+
+    let rpc_client = RpcClient::new(rpc_url.to_string());
+    let shared_data = Arc::new(RwLock::new(
+        rpc_client.get_recent_blockhash().await.unwrap().0,
+    ));
+    let tpu_client = TpuClient::new(
+        "tpu_client",
+        Arc::new(rpc_client),
+        ws_url,
+        TpuClientConfig::default(),
+    )
+    .await
+    .unwrap();
+
+    let writer_data = Arc::clone(&shared_data);
+    let h1 = tokio::spawn(async move {
+        let rpc_client = RpcClient::new(rpc_url.to_string());
+        loop {
+            let blockhash = rpc_client.get_recent_blockhash().await.unwrap().0;
+            {
+                let mut data = writer_data.write().unwrap();
+                *data = blockhash;
+            }
+
+            // tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    });
+
+    // create a tokio task that reads from shared_data and prints out the value
+    let h2 = tokio::spawn(async move {
+        let mut last_blockhash = None;
+
+        let rpc_url = "https://rpc-proxy-lax.sayori.link/42Mv0wgetfWgq6YRXbGbkUeRp49qDuFS";
+        let rpc_client = RpcClient::new(rpc_url.to_string());
+
+        let payer = read_keypair_file(&*shellexpand::tilde("~/.config/solana/id.json"))
+            .expect("Example requires a keypair file");
+
+        // sleep for 5 seconds
+        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+
+        let now = Instant::now();
+        for i in 1..100 {
+            if let Ok(data) = shared_data.try_read() {
+                if last_blockhash != Some(*data) {
+                    println!("blockhash: {:?}", data);
+                    last_blockhash = Some(*data);
+                }
+            }
+
+            if let Some(blockhash) = last_blockhash {
+                // let tx = Transaction::new_signed_with_payer(
+                //     &[ix],
+                //     Some(&payer.pubkey()),
+                //     &[&payer],
+                //     blockhash,
+                // );
+                // let bytes = bincode::serialize(&tx).unwrap();
+                // futs.push(tpu_client.send_wire_transaction(bytes));
+            }
+        }
+    });
 }
