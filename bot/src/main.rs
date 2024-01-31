@@ -1,4 +1,3 @@
-use std::result::Result::Ok;
 use anchor_client::solana_client::nonblocking::rpc_client::RpcClient;
 use anchor_client::solana_client::rpc_config::RpcSendTransactionConfig;
 use anchor_client::solana_sdk::transaction::Transaction;
@@ -8,6 +7,7 @@ use solana_client::nonblocking::tpu_client::TpuClient;
 use solana_client::tpu_client::TpuClientConfig;
 use spl_memo::build_memo;
 use std::ops::Deref;
+use std::result::Result::Ok;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::sync::RwLock;
@@ -152,8 +152,13 @@ async fn main() {
     // let decimals_y = 6;
 
     // SOL-USDC. x is SOL, y is USDC
-    let pool = Pubkey::from_str("FoSDw2L5DmTuQTFe55gWPDXf88euaxAEKFre74CnvQbX").unwrap();
-    let decimals_x = 9;
+    // let pool = Pubkey::from_str("FoSDw2L5DmTuQTFe55gWPDXf88euaxAEKFre74CnvQbX").unwrap();
+    // let decimals_x = 9;
+    // let decimals_y = 6;
+
+    // blze-usdc
+    let pool = Pubkey::from_str("7ER8z7q6RLE3EXL3m9SaH68Lei6ba8yv9APC1iq8duJG").unwrap();
+    let decimals_x = 6;
     let decimals_y = 6;
 
     let payer = read_keypair_file("/home/ubuntu/.config/solana/id.json")
@@ -168,11 +173,12 @@ async fn main() {
 
     let lb_pair_state: LbPair = program.account(pool).await.unwrap();
 
-    let amount_in = 100;
-    let swap_for_y = true;
+    let amount_in = 1_000;
+
+    let target_price = 0.50;
+    let swap_for_y = false; // true if dumping X, false if buying X
 
     // FIXME: need to find an actual price here
-    let target_price = 101.0;
     let expected_out_amount = if swap_for_y {
         // sol is x and usdc is y and we are swapping for y, we want to sell sol at a price of 100 usdc
         // or higher
@@ -192,16 +198,26 @@ async fn main() {
         price_per_token_to_per_lamport(target_price, decimals_x, decimals_y).unwrap();
 
     // println!("lb pair state: {:#?}", lb_pair_state);
-    println!("price_per_lamport: {:?}", price_per_lamport);
+    println!("bin step: {:?}", lb_pair_state.bin_step);
     let bin_id =
         get_id_from_price(lb_pair_state.bin_step, &price_per_lamport, Rounding::Down).unwrap();
     println!("bin_id: {:?}", bin_id);
 
     // TODO: bin array idx can be this or less.
-    let bin_array_idx = BinArray::bin_id_to_bin_array_index(bin_id).unwrap();
+    let mut bin_array_idx = BinArray::bin_id_to_bin_array_index(bin_id).unwrap();
     println!("bin_array_idx: {:?}", bin_array_idx);
     println!("active bin id: {:?}", lb_pair_state.active_id);
-    println!("active bin array id: {:?}", BinArray::bin_id_to_bin_array_index(lb_pair_state.active_id));
+    println!(
+        "active bin array id: {:?}",
+        BinArray::bin_id_to_bin_array_index(lb_pair_state.active_id)
+    );
+    let active_bin_array_idx =
+        BinArray::bin_id_to_bin_array_index(lb_pair_state.active_id).unwrap();
+    if swap_for_y && active_bin_array_idx > bin_array_idx
+        || !swap_for_y && active_bin_array_idx < bin_array_idx
+    {
+        bin_array_idx = active_bin_array_idx;
+    }
 
     let swap_ixes = swap(
         SwapParameters {
@@ -209,8 +225,7 @@ async fn main() {
             amount_in,
             swap_for_y,
             bin_array_idx,
-            // min_amount_out: expected_out_amount as u64,
-            min_amount_out: 0,
+            min_amount_out: expected_out_amount as u64,
         },
         &program,
         &lb_pair_state,
@@ -218,12 +233,12 @@ async fn main() {
     .await
     .unwrap();
 
-    for i in 0..10 {
+    for i in 0..1000 {
         let mut ixes = swap_ixes.clone();
         ixes.push(build_memo(format!("{}", i).as_bytes(), &[]));
 
         let tx = Transaction::new_signed_with_payer(
-            &swap_ixes,
+            &ixes,
             Some(&payer.pubkey()),
             &[&payer],
             rpc_client.get_latest_blockhash().await.unwrap(),
