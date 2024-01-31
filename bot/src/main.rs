@@ -8,6 +8,7 @@ use anchor_client::solana_sdk::transaction::Transaction;
 use anchor_client::Client;
 use solana_client::nonblocking::tpu_client::TpuClient;
 use solana_client::tpu_client::TpuClientConfig;
+use spl_associated_token_account::instruction::create_associated_token_account_idempotent;
 use spl_memo::build_memo;
 use std::ops::Deref;
 use std::result::Result::Ok;
@@ -41,6 +42,8 @@ use lb_clmm::math::u64x64_math::{from_decimal, to_decimal};
 use lb_clmm::state::bin::BinArray;
 use lb_clmm::state::lb_pair::LbPair;
 use lb_clmm::utils::pda::*;
+
+const KEYPAIR_PATH: &str = "/home/ubuntu/.config/solana/prod.json";
 
 #[derive(Debug)]
 pub struct SwapParameters {
@@ -149,10 +152,15 @@ pub async fn swap<C: Deref<Target = impl Signer> + Clone>(
 
 #[tokio::main]
 async fn main() {
+    env_logger::init();
     // JUP-USDC. x is JUP, y is USDC
-    // let pool = Pubkey::from_str("GhZtugCqUskpDPiuB5zJPxabxpZZKuPZmAQtfSDB3jpZ").unwrap();
-    // let decimals_x = 6;
-    // let decimals_y = 6;
+    let pool = Pubkey::from_str("GhZtugCqUskpDPiuB5zJPxabxpZZKuPZmAQtfSDB3jpZ").unwrap();
+    let decimals_x = 6;
+    let decimals_y = 6;
+    let amount_in = 20_000 * 1_000_000;
+    let target_price = 0.4;
+    let swap_for_y = false; // true if dumping X, false if buying X
+    let start_slot = 245287622 - 100; // 100 slots
 
     // SOL-USDC. x is SOL, y is USDC
     // let pool = Pubkey::from_str("FoSDw2L5DmTuQTFe55gWPDXf88euaxAEKFre74CnvQbX").unwrap();
@@ -160,25 +168,47 @@ async fn main() {
     // let decimals_y = 6;
 
     // pyth-usdc
-    let pool = Pubkey::from_str("7ER8z7q6RLE3EXL3m9SaH68Lei6ba8yv9APC1iq8duJG").unwrap();
-    let decimals_x = 6;
-    let decimals_y = 6;
+    // let pool = Pubkey::from_str("7ER8z7q6RLE3EXL3m9SaH68Lei6ba8yv9APC1iq8duJG").unwrap();
+    // let decimals_x = 6;
+    // let decimals_y = 6;
+    // let amount_in = 1_000_000;
+    // let target_price = 0.35;
+    // let swap_for_y = true; // true if dumping X, false if buying X
+    // let start_slot = 0;
 
-    // params
-    let amount_in = 1_000;
-    let target_price = 0.4;
-    let swap_for_y = false; // true if dumping X, false if buying X
-    let start_slot = 0;
-    // let start_slot = 245287622 - 100; // 100 slots
-    // let start_slot = 245223000;
+    let rpc_url = "https://solend.rpcpool.com/a3e03ba77d5e870c8c694b19d61c";
+    let rpc_client =
+        RpcClient::new_with_commitment(rpc_url.to_string(), CommitmentConfig::processed());
 
-    let payer = read_keypair_file("/home/ubuntu/.config/solana/id.json")
-        .expect("Wallet keypair file not found");
+    let payer = read_keypair_file(KEYPAIR_PATH).expect("Wallet keypair file not found");
     let client = Client::new(anchor_client::Cluster::Mainnet, &payer);
 
     let program = client.program(lb_clmm::ID).unwrap();
 
     let lb_pair_state: LbPair = program.account(pool).await.unwrap();
+
+    // create token accounts
+    let ixes = vec![
+        create_associated_token_account_idempotent(
+            &payer.pubkey(),
+            &payer.pubkey(),
+            &lb_pair_state.token_y_mint,
+            &anchor_spl::token::ID,
+        ),
+        create_associated_token_account_idempotent(
+            &payer.pubkey(),
+            &payer.pubkey(),
+            &lb_pair_state.token_x_mint,
+            &anchor_spl::token::ID,
+        ),
+    ];
+    let tx = Transaction::new_signed_with_payer(
+        &ixes,
+        Some(&payer.pubkey()),
+        &[&payer],
+        rpc_client.get_recent_blockhash().await.unwrap().0,
+    );
+    rpc_client.send_and_confirm_transaction(&tx).await.unwrap();
 
     let expected_out_amount = if swap_for_y {
         // sol is x and usdc is y and we are swapping for y, we want to sell sol at a price of 100 usdc
@@ -241,9 +271,6 @@ async fn main() {
     }
 
     // query slot until it hits start_slot
-    let rpc_url = "https://solend.rpcpool.com/a3e03ba77d5e870c8c694b19d61c";
-    let rpc_client =
-        RpcClient::new_with_commitment(rpc_url.to_string(), CommitmentConfig::processed());
     let mut slot = rpc_client.get_slot().await.unwrap();
     while slot < start_slot {
         println!(
@@ -260,20 +287,24 @@ async fn main() {
     }
 
     println!("spamming...");
-    let blockhash = rpc_client.get_recent_blockhash().await.unwrap().0;
-    send_txn_as_bundle(
-        rpc_client,
-        "https://ny.mainnet.block-engine.jito.wtf",
-        Arc::new(payer),
-        Pubkey::from_str("96gYZGLnJYVFmbjzopPSU6QiEV5fGqZNyN9nmNhvrZU5").unwrap(),
-        10,
-        &nested_swap_ixes[0],
-        blockhash,
-    ).await.unwrap();
-    // let h = tokio::spawn(async move {
-    //     executor(nested_swap_ixes).await;
-    // });
-    // h.await.unwrap();
+    let payer = Arc::new(payer);
+    let ixes = nested_swap_ixes.clone();
+    let j = tokio::spawn(async move {
+        let _ = send_txn_as_bundle(
+            &rpc_client,
+            "https://ny.mainnet.block-engine.jito.wtf",
+            Arc::clone(&payer),
+            Pubkey::from_str("96gYZGLnJYVFmbjzopPSU6QiEV5fGqZNyN9nmNhvrZU5").unwrap(),
+            1000,
+            ixes
+        )
+        .await;
+    });
+    let h = tokio::spawn(async move {
+        executor(nested_swap_ixes).await;
+    });
+    h.await.unwrap();
+    j.await.unwrap();
 }
 
 /// Calculate the bin id based on price. If the bin id is in between 2 bins, it will round up.
@@ -335,14 +366,6 @@ pub async fn executor(swap_ixes: Vec<Vec<Instruction>>) {
     let shared_data = Arc::new(RwLock::new(
         rpc_client.get_recent_blockhash().await.unwrap().0,
     ));
-    let tpu_client = TpuClient::new(
-        "tpu_client",
-        Arc::new(rpc_client),
-        ws_url,
-        TpuClientConfig::default(),
-    )
-    .await
-    .unwrap();
 
     let writer_data = Arc::clone(&shared_data);
     let h1 = tokio::spawn(async move {
@@ -361,9 +384,13 @@ pub async fn executor(swap_ixes: Vec<Vec<Instruction>>) {
     // create a tokio task that reads from shared_data and prints out the value
     let rpc_urls = [
         "https://rpc-proxy-miami.sayori.link/42Mv0wgetfWgq6YRXbGbkUeRp49qDuFS",
+        "https://rpc-proxy-lax.sayori.link/42Mv0wgetfWgq6YRXbGbkUeRp49qDuFS",
         "https://solend.rpcpool.com/a3e03ba77d5e870c8c694b19d61c",
         "http://mainnet.rpc.jito.wtf/",
         "http://frankfurt.mainnet.rpc.jito.wtf/",
+        "http://amsterdam.mainnet.rpc.jito.wtf/",
+        "http://ny.mainnet.rpc.jito.wtf/",
+        "http://tokyo.mainnet.rpc.jito.wtf/"
     ];
 
     let mut handles = vec![];
@@ -375,8 +402,7 @@ pub async fn executor(swap_ixes: Vec<Vec<Instruction>>) {
             let mut last_blockhash = None;
             let rpc_client = RpcClient::new(rpc_url.to_string());
 
-            let payer = read_keypair_file(&*shellexpand::tilde("~/.config/solana/id.json"))
-                .expect("Example requires a keypair file");
+            let payer = read_keypair_file(KEYPAIR_PATH).expect("Example requires a keypair file");
 
             // let now = Instant::now();
             let mut i = 0;
@@ -413,6 +439,8 @@ pub async fn executor(swap_ixes: Vec<Vec<Instruction>>) {
                         // println!("sig: {:?}", sig);
                     }
                 }
+
+                tokio::time::sleep(std::time::Duration::from_millis(1)).await;
 
                 i += 1;
                 if i % 100 == 0 {
