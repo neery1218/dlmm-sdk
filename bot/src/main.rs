@@ -1,9 +1,8 @@
+use solana_client::nonblocking::tpu_client::{TpuClient};
 use anchor_client::solana_client::nonblocking::rpc_client::RpcClient;
 use anchor_client::solana_client::rpc_config::RpcSendTransactionConfig;
 use anchor_client::solana_sdk::transaction::Transaction;
 use anchor_client::Client;
-use anchor_lang::solana_program::message::Message;
-use solana_client::nonblocking::tpu_client::TpuClient;
 use solana_client::tpu_client::TpuClientConfig;
 use spl_memo::build_memo;
 use std::ops::Deref;
@@ -26,7 +25,7 @@ use anchor_client::solana_sdk::compute_budget::ComputeBudgetInstruction;
 use anchor_client::solana_sdk::instruction::Instruction;
 use anchor_client::{solana_sdk::pubkey::Pubkey, solana_sdk::signer::Signer, Program};
 use anchor_lang::solana_program::instruction::AccountMeta;
-use anchor_lang::{AccountDeserialize, Space};
+
 use anchor_spl::associated_token::get_associated_token_address;
 
 use anyhow::*;
@@ -165,10 +164,6 @@ async fn main() {
         .expect("Wallet keypair file not found");
     let client = Client::new(anchor_client::Cluster::Mainnet, &payer);
 
-    let rpc_url = "https://solend.rpcpool.com/a3e03ba77d5e870c8c694b19d61c";
-    let rpc_url = "https://rpc-proxy-lax.sayori.link/42Mv0wgetfWgq6YRXbGbkUeRp49qDuFS";
-    let rpc_client = RpcClient::new(String::from(rpc_url));
-
     let program = client.program(lb_clmm::ID).unwrap();
 
     let lb_pair_state: LbPair = program.account(pool).await.unwrap();
@@ -233,28 +228,33 @@ async fn main() {
     .await
     .unwrap();
 
-    for i in 0..1000 {
-        let mut ixes = swap_ixes.clone();
-        ixes.push(build_memo(format!("{}", i).as_bytes(), &[]));
+    let h = tokio::spawn(async move {
+        executor(swap_ixes).await;
+    });
+    h.await.unwrap();
+    // for i in 0..1000 {
+    //     let mut ixes = vec![ComputeBudgetInstruction::set_compute_unit_price(1)]; 
+    //     ixes.extend(swap_ixes.clone());
+    //     ixes.push(build_memo(format!("{}", i).as_bytes(), &[]));
 
-        let tx = Transaction::new_signed_with_payer(
-            &ixes,
-            Some(&payer.pubkey()),
-            &[&payer],
-            rpc_client.get_latest_blockhash().await.unwrap(),
-        );
-        // let sig = rpc_client.send_and_confirm_transaction(&tx).await.unwrap();
-        let sig = rpc_client
-            .send_transaction_with_config(
-                &tx,
-                RpcSendTransactionConfig {
-                    skip_preflight: true,
-                    ..RpcSendTransactionConfig::default()
-                },
-            )
-            .await;
-        println!("sig: {:?}", sig);
-    }
+    //     let tx = Transaction::new_signed_with_payer(
+    //         &ixes,
+    //         Some(&payer.pubkey()),
+    //         &[&payer],
+    //         rpc_client.get_latest_blockhash().await.unwrap(),
+    //     );
+    //     // let sig = rpc_client.send_and_confirm_transaction(&tx).await.unwrap();
+    //     let sig = rpc_client
+    //         .send_transaction_with_config(
+    //             &tx,
+    //             RpcSendTransactionConfig {
+    //                 skip_preflight: true,
+    //                 ..RpcSendTransactionConfig::default()
+    //             },
+    //         )
+    //         .await;
+    //     println!("sig: {:?}", sig);
+    // }
 
     // println!("bin_array_idx: {:?}", bin_array_idx);
     // let bin_array: BinArray = program
@@ -327,7 +327,7 @@ pub fn price_per_lamport_to_price_per_token(
     )
 }
 
-async fn executor() {
+pub async fn executor(swap_ixes: Vec<Instruction>) {
     let rpc_url = "https://solend.rpcpool.com/a3e03ba77d5e870c8c694b19d61c";
     let ws_url = "ws://solend.rpcpool.com/a3e03ba77d5e870c8c694b19d61c:8900";
 
@@ -344,52 +344,84 @@ async fn executor() {
     .await
     .unwrap();
 
+
     let writer_data = Arc::clone(&shared_data);
     let h1 = tokio::spawn(async move {
         let rpc_client = RpcClient::new(rpc_url.to_string());
         loop {
-            let blockhash = rpc_client.get_recent_blockhash().await.unwrap().0;
-            {
+            let blockhash = rpc_client.get_recent_blockhash().await;
+            if let Ok((blockhash, _)) = blockhash {
                 let mut data = writer_data.write().unwrap();
                 *data = blockhash;
             }
 
-            // tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
     });
 
     // create a tokio task that reads from shared_data and prints out the value
-    let h2 = tokio::spawn(async move {
-        let mut last_blockhash = None;
+    let rpc_urls = [
+        "https://rpc-proxy-miami.sayori.link/42Mv0wgetfWgq6YRXbGbkUeRp49qDuFS",
+        "https://solend.rpcpool.com/a3e03ba77d5e870c8c694b19d61c",
+        "http://mainnet.rpc.jito.wtf/",
+        "http://frankfurt.mainnet.rpc.jito.wtf/"
+    ];
 
-        let rpc_url = "https://rpc-proxy-lax.sayori.link/42Mv0wgetfWgq6YRXbGbkUeRp49qDuFS";
-        let rpc_client = RpcClient::new(rpc_url.to_string());
+    let mut handles = vec![];
+    for rpc_url in rpc_urls {
+        let swap_ixes = swap_ixes.clone();
+        let shared_data = Arc::clone(&shared_data);
 
-        let payer = read_keypair_file(&*shellexpand::tilde("~/.config/solana/id.json"))
-            .expect("Example requires a keypair file");
+        let h = tokio::spawn(async move {
+            let mut last_blockhash = None;
+            let rpc_client = RpcClient::new(rpc_url.to_string());
 
-        // sleep for 5 seconds
-        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+            let payer = read_keypair_file(&*shellexpand::tilde("~/.config/solana/id.json"))
+                .expect("Example requires a keypair file");
 
-        let now = Instant::now();
-        for i in 1..100 {
-            if let Ok(data) = shared_data.try_read() {
-                if last_blockhash != Some(*data) {
-                    println!("blockhash: {:?}", data);
-                    last_blockhash = Some(*data);
+            // let now = Instant::now();
+            for i in 1..250 {
+                if let Ok(data) = shared_data.try_read() {
+                    if last_blockhash != Some(*data) {
+                        println!("blockhash: {:?}", data);
+                        last_blockhash = Some(*data);
+                    }
+                }
+
+                if let Some(blockhash) = last_blockhash {
+                    let mut ixes = vec![ComputeBudgetInstruction::set_compute_unit_price(1)];
+                    ixes.extend(swap_ixes.clone());
+                    ixes.push(build_memo(format!("{}", i).as_bytes(), &[]));
+
+                    let tx = Transaction::new_signed_with_payer(
+                        &ixes,
+                        Some(&payer.pubkey()),
+                        &[&payer],
+                        blockhash
+                    );
+                    // let sig = rpc_client.send_and_confirm_transaction(&tx).await.unwrap();
+                    let sig = rpc_client
+                        .send_transaction_with_config(
+                            &tx,
+                            RpcSendTransactionConfig {
+                                skip_preflight: true,
+                                ..RpcSendTransactionConfig::default()
+                            },
+                        )
+                        .await;
+                    // println!("sig: {:?}", sig);
+                }
+                if i % 100 == 0 {
+                    println!("{} transactions sent", i);
                 }
             }
 
-            if let Some(blockhash) = last_blockhash {
-                // let tx = Transaction::new_signed_with_payer(
-                //     &[ix],
-                //     Some(&payer.pubkey()),
-                //     &[&payer],
-                //     blockhash,
-                // );
-                // let bytes = bincode::serialize(&tx).unwrap();
-                // futs.push(tpu_client.send_wire_transaction(bytes));
-            }
-        }
-    });
+            println!("done");
+        });
+        handles.push(h);
+    }
+
+    for h in handles {
+        h.await.unwrap();
+    }
 }
