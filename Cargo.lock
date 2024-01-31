@@ -814,6 +814,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "bot"
+version = "0.1.0"
+dependencies = [
+ "anchor-client",
+ "anchor-lang",
+ "anchor-spl",
+ "anyhow",
+ "clap 4.4.7",
+ "cli",
+ "lb_clmm",
+ "mpl-token-metadata",
+ "proptest",
+ "rand 0.8.5",
+ "rust_decimal",
+ "shellexpand",
+ "spl-associated-token-account",
+ "tokio",
+]
+
+[[package]]
 name = "brotli"
 version = "3.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

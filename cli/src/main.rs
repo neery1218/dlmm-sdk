@@ -204,14 +204,15 @@ async fn main() -> Result<()> {
             amount_in,
             swap_for_y,
         } => {
-            // let (lb_pair, _) = derive_lb_pair_pda(
-            //     Pubkey::from_str("So11111111111111111111111111111111111111112").unwrap(), 
-            //     Pubkey::from_str("SLNDpmoWTVADgEdndyvWzroNL7zSi1dF9PC3xHGtPwp").unwrap(), 
-            //     100, 
-            //     true 
-            // );
-            // println!("hello");
-            // println!("{:?}", lb_pair);
+            let (lb_pair, _) = derive_lb_pair_pda(
+                Pubkey::from_str("So11111111111111111111111111111111111111112").unwrap(), 
+                Pubkey::from_str("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v").unwrap(), 
+                8, 
+                // permissioned
+                false 
+            );
+            println!("hello");
+            println!("{:?}", lb_pair);
 
             let params = SwapParameters {
                 amount_in,

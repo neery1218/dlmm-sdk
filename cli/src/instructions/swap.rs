@@ -11,11 +11,15 @@ use anchor_spl::associated_token::get_associated_token_address;
 
 use anyhow::*;
 use lb_clmm::accounts;
+use lb_clmm::constants::MAX_BIN_PER_ARRAY;
 use lb_clmm::instruction;
 
+use lb_clmm::math::u64x64_math::to_decimal;
 use lb_clmm::state::bin::BinArray;
 use lb_clmm::state::lb_pair::LbPair;
 use lb_clmm::utils::pda::*;
+
+use crate::math::{q64x64_price_to_decimal, price_per_lamport_to_price_per_token};
 
 #[derive(Debug)]
 pub struct SwapParameters {
@@ -35,19 +39,12 @@ pub async fn swap<C: Deref<Target = impl Signer> + Clone>(
         swap_for_y,
     } = params;
 
-    let rpc_client = program.async_rpc();
-    let data = rpc_client.get_account_data(&lb_pair).await?;
-    println!("data: {:#?}", data.len());
-    println!("size: {:?}", LbPair::INIT_SPACE);
-    println!("hi");
-    println!("trying");
-    let a = LbPair::try_deserialize(&mut &data[..])?;
-    println!("a: {:#?}", a);
     let lb_pair_state: LbPair = program.account(lb_pair).await?;
     println!("lb_pair_state: {:#?}", lb_pair_state);
 
     let active_bin_array_idx = BinArray::bin_id_to_bin_array_index(lb_pair_state.active_id)?;
     let (bin_array_0, _bump) = derive_bin_array_pda(lb_pair, active_bin_array_idx as i64);
+    let bin_array: BinArray = program.account(bin_array_0).await?;
 
     let (user_token_in, user_token_out, bin_array_1, bin_array_2) = if swap_for_y {
         (
@@ -64,6 +61,23 @@ pub async fn swap<C: Deref<Target = impl Signer> + Clone>(
             derive_bin_array_pda(lb_pair, (active_bin_array_idx + 2) as i64).0,
         )
     };
+
+    {
+        let bin_array_1: BinArray = program.account(bin_array_1).await?;
+        let bin_array_2: BinArray = program.account(bin_array_2).await?;
+        for bin_array in [bin_array, bin_array_1, bin_array_2] {
+            println!("bin array index: {:?}", bin_array.index);
+            let bin = bin_array.bins[0];
+            let price = q64x64_price_to_decimal(bin.price).unwrap();
+            let price = price_per_lamport_to_price_per_token(price.try_into()?, 9, 6);
+            println!("active bin array 0 price: {:?}", price);
+
+            let bin = bin_array.bins[MAX_BIN_PER_ARRAY - 1];
+            let price = q64x64_price_to_decimal(bin.price).unwrap();
+            let price = price_per_lamport_to_price_per_token(price.try_into()?, 9, 6);
+            println!("active bin array n-1 price: {:?}", price);
+        }
+    }
 
     let (bin_array_bitmap_extension, _bump) = derive_bin_array_bitmap_extension(lb_pair);
     let bin_array_bitmap_extension = if program
