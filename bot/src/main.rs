@@ -1,5 +1,6 @@
 use anchor_client::solana_client::nonblocking::rpc_client::RpcClient;
 use anchor_client::solana_client::rpc_config::RpcSendTransactionConfig;
+use anchor_client::solana_sdk::commitment_config::CommitmentConfig;
 use anchor_client::solana_sdk::transaction::Transaction;
 use anchor_client::Client;
 use solana_client::nonblocking::tpu_client::TpuClient;
@@ -145,11 +146,6 @@ pub async fn swap<C: Deref<Target = impl Signer> + Clone>(
 
 #[tokio::main]
 async fn main() {
-    // params
-    let amount_in = 1_000;
-    let target_price = 0.4;
-    let swap_for_y = true; // true if dumping X, false if buying X
-
     // JUP-USDC. x is JUP, y is USDC
     let pool = Pubkey::from_str("GhZtugCqUskpDPiuB5zJPxabxpZZKuPZmAQtfSDB3jpZ").unwrap();
     let decimals_x = 6;
@@ -161,9 +157,16 @@ async fn main() {
     // let decimals_y = 6;
 
     // pyth-usdc
-    let pool = Pubkey::from_str("7ER8z7q6RLE3EXL3m9SaH68Lei6ba8yv9APC1iq8duJG").unwrap();
-    let decimals_x = 6;
-    let decimals_y = 6;
+    // let pool = Pubkey::from_str("7ER8z7q6RLE3EXL3m9SaH68Lei6ba8yv9APC1iq8duJG").unwrap();
+    // let decimals_x = 6;
+    // let decimals_y = 6;
+
+    // params
+    let amount_in = 1_000;
+    let target_price = 0.4;
+    let swap_for_y = false; // true if dumping X, false if buying X
+    let start_slot = 245287622 - 100; // 100 slots
+                                      // let start_slot = 245223000;
 
     let payer = read_keypair_file("/home/ubuntu/.config/solana/id.json")
         .expect("Wallet keypair file not found");
@@ -173,7 +176,6 @@ async fn main() {
 
     let lb_pair_state: LbPair = program.account(pool).await.unwrap();
 
-    // FIXME: need to find an actual price here
     let expected_out_amount = if swap_for_y {
         // sol is x and usdc is y and we are swapping for y, we want to sell sol at a price of 100 usdc
         // or higher
@@ -187,6 +189,7 @@ async fn main() {
         // expected total sol per $1 = (dollar value of input / target_price) * 10.pow(decimals_x)
         amount_in as f64 / target_price * 10_f64.powi(decimals_x as i32 - decimals_y as i32)
     };
+
     println!("expected_out_amount: {:?}", expected_out_amount);
 
     let price_per_lamport =
@@ -231,6 +234,25 @@ async fn main() {
         .await
         .unwrap();
         nested_swap_ixes.push(swap_ixes);
+    }
+
+    // query slot until it hits start_slot
+    let rpc_url = "https://solend.rpcpool.com/a3e03ba77d5e870c8c694b19d61c";
+    let rpc_client =
+        RpcClient::new_with_commitment(rpc_url.to_string(), CommitmentConfig::processed());
+    let mut slot = rpc_client.get_slot().await.unwrap();
+    while slot < start_slot {
+        println!(
+            "current slot: {:?}, still waiting for start_slot: {:?}, {:?} slots left",
+            slot,
+            start_slot,
+            start_slot - slot
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
+        let new_slot = rpc_client.get_slot().await;
+        if let Ok(inner_slot) = new_slot {
+            slot = inner_slot;
+        }
     }
 
     println!("spamming...");
