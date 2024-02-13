@@ -43,7 +43,7 @@ use lb_clmm::state::bin::BinArray;
 use lb_clmm::state::lb_pair::LbPair;
 use lb_clmm::utils::pda::*;
 
-const KEYPAIR_PATH: &str = "/home/ubuntu/.config/solana/prod.json";
+const KEYPAIR_PATH: &str = "/home/ubuntu/.config/solana/id.json";
 
 #[derive(Debug)]
 pub struct SwapParameters {
@@ -155,12 +155,12 @@ async fn main() {
     env_logger::init();
     // JUP-USDC. x is JUP, y is USDC
     let pool = Pubkey::from_str("GhZtugCqUskpDPiuB5zJPxabxpZZKuPZmAQtfSDB3jpZ").unwrap();
-    let decimals_x = 6;
-    let decimals_y = 6;
-    let amount_in = 20_000 * 1_000_000;
-    let target_price = 0.4;
-    let swap_for_y = false; // true if dumping X, false if buying X
-    let start_slot = 245287622 - 100; // 100 slots
+    // let decimals_x = 6;
+    // let decimals_y = 6;
+    // let amount_in = 10_000;
+    // let target_price = 0.70;
+    // let swap_for_y = false; // true if dumping X, false if buying X
+    // let start_slot = 245286300; // 100 slots
 
     // SOL-USDC. x is SOL, y is USDC
     // let pool = Pubkey::from_str("FoSDw2L5DmTuQTFe55gWPDXf88euaxAEKFre74CnvQbX").unwrap();
@@ -168,13 +168,13 @@ async fn main() {
     // let decimals_y = 6;
 
     // pyth-usdc
-    // let pool = Pubkey::from_str("7ER8z7q6RLE3EXL3m9SaH68Lei6ba8yv9APC1iq8duJG").unwrap();
-    // let decimals_x = 6;
-    // let decimals_y = 6;
-    // let amount_in = 1_000_000;
-    // let target_price = 0.35;
-    // let swap_for_y = true; // true if dumping X, false if buying X
-    // let start_slot = 0;
+    // let pool = Pubkey::from_str("").unwrap();
+    let decimals_x = 6;
+    let decimals_y = 6;
+    let amount_in = 1_000;
+    let target_price = 0.45;
+    let swap_for_y = false; // true if dumping X, false if buying X
+    let start_slot = 0;
 
     let rpc_url = "https://solend.rpcpool.com/a3e03ba77d5e870c8c694b19d61c";
     let rpc_client =
@@ -188,27 +188,27 @@ async fn main() {
     let lb_pair_state: LbPair = program.account(pool).await.unwrap();
 
     // create token accounts
-    let ixes = vec![
-        create_associated_token_account_idempotent(
-            &payer.pubkey(),
-            &payer.pubkey(),
-            &lb_pair_state.token_y_mint,
-            &anchor_spl::token::ID,
-        ),
-        create_associated_token_account_idempotent(
-            &payer.pubkey(),
-            &payer.pubkey(),
-            &lb_pair_state.token_x_mint,
-            &anchor_spl::token::ID,
-        ),
-    ];
-    let tx = Transaction::new_signed_with_payer(
-        &ixes,
-        Some(&payer.pubkey()),
-        &[&payer],
-        rpc_client.get_recent_blockhash().await.unwrap().0,
-    );
-    rpc_client.send_and_confirm_transaction(&tx).await.unwrap();
+    // let ixes = vec![
+    //     create_associated_token_account_idempotent(
+    //         &payer.pubkey(),
+    //         &payer.pubkey(),
+    //         &lb_pair_state.token_y_mint,
+    //         &anchor_spl::token::ID,
+    //     ),
+    //     create_associated_token_account_idempotent(
+    //         &payer.pubkey(),
+    //         &payer.pubkey(),
+    //         &lb_pair_state.token_x_mint,
+    //         &anchor_spl::token::ID,
+    //     ),
+    // ];
+    // let tx = Transaction::new_signed_with_payer(
+    //     &ixes,
+    //     Some(&payer.pubkey()),
+    //     &[&payer],
+    //     rpc_client.get_recent_blockhash().await.unwrap().0,
+    // );
+    // rpc_client.send_and_confirm_transaction(&tx).await.unwrap();
 
     let expected_out_amount = if swap_for_y {
         // sol is x and usdc is y and we are swapping for y, we want to sell sol at a price of 100 usdc
@@ -289,22 +289,22 @@ async fn main() {
     println!("spamming...");
     let payer = Arc::new(payer);
     let ixes = nested_swap_ixes.clone();
-    let j = tokio::spawn(async move {
-        let _ = send_txn_as_bundle(
-            &rpc_client,
-            "https://ny.mainnet.block-engine.jito.wtf",
-            Arc::clone(&payer),
-            Pubkey::from_str("96gYZGLnJYVFmbjzopPSU6QiEV5fGqZNyN9nmNhvrZU5").unwrap(),
-            1000,
-            ixes
-        )
-        .await;
-    });
+    // let j = tokio::spawn(async move {
+    //     let _ = send_txn_as_bundle(
+    //         &rpc_client,
+    //         "https://ny.mainnet.block-engine.jito.wtf",
+    //         Arc::clone(&payer),
+    //         Pubkey::from_str("96gYZGLnJYVFmbjzopPSU6QiEV5fGqZNyN9nmNhvrZU5").unwrap(),
+    //         100_000_000,
+    //         ixes
+    //     )
+    //     .await;
+    // });
     let h = tokio::spawn(async move {
         executor(nested_swap_ixes).await;
     });
     h.await.unwrap();
-    j.await.unwrap();
+    // j.await.unwrap();
 }
 
 /// Calculate the bin id based on price. If the bin id is in between 2 bins, it will round up.
@@ -383,14 +383,14 @@ pub async fn executor(swap_ixes: Vec<Vec<Instruction>>) {
 
     // create a tokio task that reads from shared_data and prints out the value
     let rpc_urls = [
-        "https://rpc-proxy-miami.sayori.link/42Mv0wgetfWgq6YRXbGbkUeRp49qDuFS",
-        "https://rpc-proxy-lax.sayori.link/42Mv0wgetfWgq6YRXbGbkUeRp49qDuFS",
+        // "https://rpc-proxy-miami.sayori.link/42Mv0wgetfWgq6YRXbGbkUeRp49qDuFS",
+        // "https://rpc-proxy-lax.sayori.link/42Mv0wgetfWgq6YRXbGbkUeRp49qDuFS",
         "https://solend.rpcpool.com/a3e03ba77d5e870c8c694b19d61c",
-        "http://mainnet.rpc.jito.wtf/",
-        "http://frankfurt.mainnet.rpc.jito.wtf/",
-        "http://amsterdam.mainnet.rpc.jito.wtf/",
-        "http://ny.mainnet.rpc.jito.wtf/",
-        "http://tokyo.mainnet.rpc.jito.wtf/"
+        // "http://mainnet.rpc.jito.wtf/",
+        // "http://frankfurt.mainnet.rpc.jito.wtf/",
+        // "http://amsterdam.mainnet.rpc.jito.wtf/",
+        // "http://ny.mainnet.rpc.jito.wtf/",
+        // "http://tokyo.mainnet.rpc.jito.wtf/"
     ];
 
     let mut handles = vec![];
@@ -416,7 +416,7 @@ pub async fn executor(swap_ixes: Vec<Vec<Instruction>>) {
 
                 for swap_ixes in &swap_ixes {
                     if let Some(blockhash) = last_blockhash {
-                        let mut ixes = vec![ComputeBudgetInstruction::set_compute_unit_price(1)];
+                        let mut ixes = vec![ComputeBudgetInstruction::set_compute_unit_price(100_000)];
                         ixes.extend(swap_ixes.clone());
                         ixes.push(build_memo(format!("{}", i).as_bytes(), &[]));
 
